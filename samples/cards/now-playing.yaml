@@ -1,0 +1,27 @@
+title: Now Playing
+type: markdown
+content: >-
+  {% if is_state("input_text.mister_platform", "Arcade") -%}
+    {% set icon = {
+      "controller": "mdi:currency-usd",
+      "screen": "mdi:account-multiple"
+    } %}
+  {%- elif is_state("input_text.mister_platform", "Nintendo Entertainment
+  System") -%}
+    {% set icon = {
+      "controller": "mdi:gamepad-square",
+      "screen": "mdi:television-classic"
+    } %}
+  {%- else -%}
+    {% set icon = {
+      "controller": "mdi:controller-classic",
+      "screen": "mdi:television"
+    } %}
+  {%- endif %}
+
+
+  # <ha-icon icon="{{ icon.controller }}"></ha-icon>
+  {{states("input_text.mister_game")}}
+
+  ##  <ha-icon icon="{{ icon.screen }}"></ha-icon>
+  {{states("input_text.mister_platform")}}
