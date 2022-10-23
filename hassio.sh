@@ -40,16 +40,19 @@ class HomeAssistant:
         self.hostname = ini["HA_INFO"]["HA_HOSTNAME"]
         self.protocol = ini["HA_INFO"]["HA_PROTOCOL"]
         self.port = ini["HA_INFO"]["HA_PORT"]
+        self.token = ini["HA_INFO"]["HA_LONG_LIVED_TOKEN"]
         self.game_entity_name = ini["HA_INFO"]["HA_GAME_ENTITY"]
         self.platform_entity_name = ini["HA_INFO"]["HA_PLATFORM_ENTITY"]
-        self.current_hass_state_game = self.get_entity(self.game_entity_name)
-        self.current_hass_state_platform = self.get_entity(self.platform_entity_name)
-        self.token = ini["HA_INFO"]["HA_LONG_LIVED_TOKEN"]
         self.baseurl = "{}://{}:{}/api/".format(self.protocol, self.hostname, self.port)
-        self.api_up = False
+        self.current_hass_state_game = ""
+        self.current_hass_state_platform = ""
         if self.test_api() == 200:
             self.api_up = True
+            self.current_hass_state_game = self.get_entity(self.game_entity_name)
+            self.current_hass_state_platform = self.get_entity(self.platform_entity_name)
+        
         return
+
 
     def test_api(self):
         try:
@@ -77,10 +80,11 @@ class HomeAssistant:
             return None
 
 
-    def get_entity(self, entity):
+    def get_entity(self, entity: str):
         try:
             logger.debug('Checking for {} entity'.format(entity))
             http = urllib3.PoolManager()
+            print("{}states/{}".format(self.baseurl, entity))
             r = http.request(
                 'GET',
                 "{}states/{}".format(self.baseurl, entity),
@@ -92,12 +96,14 @@ class HomeAssistant:
             if r.status == 200:
                 logger.debug("{} entity was found.".format(entity))
                 logger.debug(json.loads(r.data.decode('utf-8'))['state'])
+                print(json.loads(r.data.decode('utf-8')))
                 return json.loads(r.data.decode('utf-8'))
             elif r.status == 404:
                 logger.debug("{} entity can't be found. Check readme for requirements.".format(entity))
             else:
                 logger.debug("An unknown error has occurred.".format(entity))
         except Exception:
+            logger.error("Unexpected exception getting entity.")
             logger.error(str(Exception))
         return
 
@@ -111,10 +117,10 @@ class HomeAssistant:
         encoded_data = json.dumps(data).encode('utf-8')
         r = http.request(
             'POST', 
-            "{}states/{}".format(BASEURL, entity),
+            "{}states/{}".format(self.baseurl, entity),
             body=encoded_data,
             headers= {
-                "authorization": 'Bearer ' + HA_LONG_LIVED_TOKEN,
+                "authorization": 'Bearer ' + self.token,
                 "content-type": 'application/json'
             }
         )
@@ -245,12 +251,9 @@ while True:
     ha = HomeAssistant()
     if ha.api_up:
         mister = Mister()
-        print(ha.game_entity_name)
-        print(ha.platform_entity_name)
-        print(mister.most_recent_game.name)
-        print(mister.most_recent_game.platform)
-        #ha.update_entity(ha.game_entity_name, mister.most_recent_game.name), current_hass_state_game['attributes'])
-        #ha.update_entity(HA_PLATFORM_ENTITY, platform, current_hass_state_platform['attributes'])
+        print(ha.current_hass_state_game)
+        ha.update_entity(ha.game_entity_name, mister.most_recent_game.name, ha.current_hass_state_game['attributes'])
+        ha.update_entity(ha.platform_entity_name, mister.most_recent_game.platform, ha.current_hass_state_platform['attributes'])
     print("Sleeping {} seconds...".format(POLL_TIME))
     time.sleep(int(POLL_TIME))
 
