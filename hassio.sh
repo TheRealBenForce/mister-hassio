@@ -9,23 +9,24 @@ import sys
 import time
 import urllib3
 
-INI_PATH = "/media/fat/Scripts/hassio.ini"
+# Globals
+
+INI_PATH = "./hassio.ini"
 if os.path.exists(INI_PATH):
     ini = configparser.ConfigParser()
     ini.read(INI_PATH)
-    HA_HOSTNAME = ini["HA_INFO"]["HA_HOSTNAME"]
-    HA_PROTOCOL = ini["HA_INFO"]["HA_PROTOCOL"]
-    HA_PORT = ini["HA_INFO"]["HA_PORT"]
-    HA_GAME_ENTITY = ini["HA_INFO"]["HA_GAME_ENTITY"]
-    HA_PLATFORM_ENTITY = ini["HA_INFO"]["HA_PLATFORM_ENTITY"]
-    HA_LONG_LIVED_TOKEN = ini["HA_INFO"]["HA_LONG_LIVED_TOKEN"]
     LOG_LEVEL = ini["GENERAL"]["LOG_LEVEL"]
+    LOG_TO_FILE = ini["GENERAL"]["LOG_TO_FILE"]
+    LOG_TO_STDOUT = ini["GENERAL"]["LOG_TO_STDOUT"]
     POLL_TIME = ini["GENERAL"]["POLL_TIME"]
 
+# Setup Logging
 file_handler = logging.FileHandler(filename='/tmp/hassio.log', encoding='utf-8')
 stdout_handler = logging.StreamHandler(stream=sys.stdout)
-handlers = [stdout_handler]
-#handlers.append(file_handler)
+if LOG_TO_STDOUT:
+    handlers = [stdout_handler]
+if LOG_TO_FILE:
+    handlers.append(file_handler)
 numeric_level = getattr(logging, LOG_LEVEL.upper(), 10)
 logging.basicConfig(
     level=numeric_level, 
@@ -35,185 +36,176 @@ logging.basicConfig(
 logger = logging.getLogger('hassio_logger')
 
 
-SAM_PATH = "/tmp/SAM_Game.txt"
-CORES_RECENT_PATH = "/media/fat/config/cores_recent.cfg"
-BASEURL = "{}://{}:{}/api/".format(HA_PROTOCOL, HA_HOSTNAME, HA_PORT)
-STARTUP_SCRIPT = "/media/fat/linux/user-startup.sh"
-
-#cmd = 'while inotifywait -e close_write /tmp/SAM_Game.txt; do /media/fat/Scripts/hassio.sh; done'
-#os.system(cmd)
-
-
-# run a refresh on each boot, thanks wizzo
-def try_add_to_startup():
-    logger.info('Adding script to startup.')
-    if not os.path.exists(STARTUP_SCRIPT):
+class HomeAssistant:
+    def __init__(self):
+        self.hostname = ini["HA_INFO"]["HA_HOSTNAME"]
+        self.protocol = ini["HA_INFO"]["HA_PROTOCOL"]
+        self.port = ini["HA_INFO"]["HA_PORT"]
+        self.game_entity_name = ini["HA_INFO"]["HA_GAME_ENTITY"]
+        self.platform_entity_name = ini["HA_INFO"]["HA_PLATFORM_ENTITY"]
+        self.token = ini["HA_INFO"]["HA_LONG_LIVED_TOKEN"]
+        self.baseurl = "{}://{}:{}/api/".format(self.protocol, self.hostname, self.port)
+        self.api_up = False
+        if self.test_api() == 200:
+            self.api_up = True
         return
-    with open(STARTUP_SCRIPT, "r") as f:
-        if "Startup Hass Watcher" in f.read():
-            return
-    with open(STARTUP_SCRIPT, "a") as f:
-        f.write(
-            "\n# Startup Hass Watcher\n[[ -e /media/fat/Scripts/hassio.sh ]] && /media/fat/Scripts/hassio.sh refresh\n"
-        )
-    return
+
+    def test_api(self):
+        try:
+            logger.debug('Testing Home Assistant API.')
+            http = urllib3.PoolManager()
+            r = http.request(
+                'GET', 
+                self.baseurl,
+                headers={
+                    "authorization": 'Bearer ' + self.token,
+                    "content-type": 'application/json'
+                }
+            )
+            if r.status == 200:
+                logger.debug('Home Assistant API is alive.')
+            elif r.status == 401:
+                logger.error('Home Assistant returned status code {}. You are unauthorized. Check your long lived token.'.format(str(r.status)))
+            elif r.status == 403:
+                logger.error('Home Assistant returned status code {}. You are forbidden. Check your long lived token and ip_bans.yaml.'.format(str(r.status)))
+            else:
+                logger.error('Home Assistant test api failed and returned status code {}'.format(str(r.status)))
+            return r.status
+        except Exception:
+            logger.error(str(Exception))
+            return None
 
 
-def find_most_recent():
-    list_of_files = glob.glob('/media/fat/config/*_recent_*.cfg')
-    list_of_files.append(CORES_RECENT_PATH)
-    if os.path.isfile(SAM_PATH):
-        logger.debug('Determined SAM is active on system.')
-        list_of_files.append(SAM_PATH)
-    latest_file = max(list_of_files, key=os.path.getctime)
-    if latest_file == SAM_PATH:
-        logger.debug('Determined SAM is most recent launch.')
-        game, platform = get_game_from_sam()
-    elif latest_file == CORES_RECENT_PATH:
-        logger.debug('Determined most recent launched from menu.')
-        game, platform = get_game_from_cores_recent()
-    else:
-        logger.debug('Determined most recent launched from core {}.'.format(latest_file))
-        game, platform = get_game_from_specific_cores_recent(latest_file)
-    platform = get_friendly_platform_name(platform)
-    logger.debug("Latest file: {}".format(latest_file))
-    logger.debug("Latest game: {}".format(game))
-    logger.debug("Latest platform: {}".format(platform))
-    return game, platform
+    def get_entity(self, entity):
+        try:
+            logger.debug('Checking for {} entity'.format(entity))
+            http = urllib3.PoolManager()
+            r = http.request(
+                'GET',
+                "{}states/{}".format(self.baseurl, entity),
+                headers={
+                    "authorization": 'Bearer ' + self.token,
+                    "content-type": 'application/json'
+                }
+            )
+            if r.status == 200:
+                logger.debug("{} entity was found.".format(entity))
+                logger.debug(json.loads(r.data.decode('utf-8'))['state'])
+                return json.loads(r.data.decode('utf-8'))
+            elif r.status == 404:
+                logger.debug("{} entity can't be found. Check readme for requirements.".format(entity))
+            else:
+                logger.debug("An unknown error has occurred.".format(entity))
+        except Exception:
+            logger.error(str(Exception))
+        return
 
 
-def get_game_from_sam():
-    logger.debug('Getting recent launched game from SAM')
-    with open(SAM_PATH) as f:
-        line = f.readline()
-    f.close
-    arr = line.split('(')
-    game = arr[0].strip()
-    platform = arr[-1].split(')')[0]
-    return game, platform
+class Mister:
+    def __init__(self):
+        self.platform = ""
+        self.startup_script_path = "/media/fat/linux/user-startup.sh"
+        self.sam_path = "/tmp/SAM_Game.txt"
+        self.sam_is_active = self.is_sam_active()
+        self.config_path = "/media/fat/config"
+        self.cores_recent_path = self.config_path + "/cores_recent.cfg"
+        self.list_of_recent_files = glob.glob(self.config_path + "/*_recent_*.cfg")
+        self.most_recent_file = self.find_most_recent_file()
+        self.most_recent_game = self.find_most_recent_game()
 
 
-def get_game_from_specific_cores_recent(filepath: str):
-    logger.debug('Getting recent launched game from cores_recents')
-    with open(filepath) as f:
-        game_path = f.readline().split('\x00')[0]
-    f.close
-    platform = game_path.split("/")[1]
-    game = game_path.split("/")[2].split(".")[0]
-    return game, platform
+    def is_sam_active(self):
+        if os.path.isfile(self.sam_path):
+            logger.debug('Determined SAM is active on system.')
+            return True
 
 
-def get_game_from_cores_recent():
-    logger.debug('Getting recent launched game from {}'.format(CORES_RECENT_PATH))
-    with open(CORES_RECENT_PATH) as f:
-        data = f.readline()
-    f.close
-    arr = re.split('\x00+', data)
-    print(arr)
-    platform = arr[0].split('/')[0]
-    if platform[0] == '_':
-        platform = platform[1:]
-    game = arr[1].split('.')[0]
-    print(platform)
-    print(game)
-    return game, platform
+    def find_most_recent_file(self):
+        list_of_files = self.list_of_recent_files
+        list_of_files.append(self.cores_recent_path)
+        if self.sam_is_active:
+            list_of_files.append(self.sam_path)
+        return max(list_of_files, key=os.path.getctime)
 
 
-def get_friendly_platform_name(platform: str):
-    logger.debug('Converting {} to a friendly name.'.format(platform))
-    if platform.lower() == "arcade":
-        return "Arcade"
-    elif platform.lower() == "sms":
-        return "Sega Master System"
-    elif platform.lower() == "genesis":
-        return "Sega Genesis"
-    elif platform.lower() == "nes":
-        return "Nintendo Entertainment System"
-    elif platform.lower() == "snes":
-        return "Super Nintendo Entertainment System"
-    else:
-        return platform
-
-def test_api():
-    try:
-        logger.debug('Testing Home Assistant API.')
-        http = urllib3.PoolManager()
-        r = http.request(
-            'GET', 
-            BASEURL,
-            headers={
-                "authorization": 'Bearer ' + HA_LONG_LIVED_TOKEN,
-                "content-type": 'application/json'
-            }
-        )
-        if r.status == 200:
-            logger.debug('Home Assistant API is alive.')
-        elif r.status == 401:
-            logger.error('Home Assistant returned status code {}. You are unauthorized. Check your long lived token.'.format(str(r.status)))
-        elif r.status == 403:
-            logger.error('Home Assistant returned status code {}. You are forbidden. Check your long lived token and ip_bans.yaml.'.format(str(r.status)))
+    def find_most_recent_game(self):
+        if self.most_recent_file == self.sam_path:
+            logger.debug('Determined SAM is most recent launch.')
+            game, platform = self.get_game_from_sam()
+        elif self.most_recent_file == self.cores_recent_path:
+            logger.debug('Determined most recent launched from menu.')
+            game, platform = self.get_game_from_cores_recent()
         else:
-            logger.error('Home Assistant test api failed and returned status code {}'.format(str(r.status)))
-        return r.status
-    except Exception:
-        logger.error(str(Exception))
-        return None
+            logger.debug('Determined most recent launched from core {}.'.format(latest_file))
+            game, platform = self.get_game_from_specific_cores_recent()
+        platform = self.get_friendly_platform_name(platform)
+        logger.debug("Latest file: {}".format(self.most_recent_file))
+        logger.debug("Latest game: {}".format(game))
+        logger.debug("Latest platform: {}".format(platform))
+        return Game(game, platform)
 
-def get_entity(entity):
-    try:
-        logger.debug('Checking for {} entity'.format(entity))
-        http = urllib3.PoolManager()
-        r = http.request(
-            'GET',
-            "{}states/{}".format(BASEURL, entity),
-            headers={
-                "authorization": 'Bearer ' + HA_LONG_LIVED_TOKEN,
-                "content-type": 'application/json'
-            }
-        )
-        if r.status == 200:
-            logger.debug("{} entity was found.".format(entity))
-            logger.debug(json.loads(r.data.decode('utf-8'))['state'])
-            return json.loads(r.data.decode('utf-8'))
-        elif r.status == 404:
-            logger.debug("{} entity can't be found. Check readme for requirements.".format(entity))
+    def get_game_from_sam(self):
+        logger.debug('Getting recent launched game from SAM')
+        with open(self.most_recent_file) as f:
+            line = f.readline()
+        f.close
+        arr = line.split('(')
+        game = arr[0].strip()
+        platform = arr[-1].split(')')[0]
+        return game, platform
+
+
+    def get_game_from_specific_cores_recent(self):
+        logger.debug('Getting recent launched game from cores_recents')
+        with open(self.most_recent_file) as f:
+            game_path = f.readline().split('\x00')[0]
+        f.close
+        platform = game_path.split("/")[1]
+        game = game_path.split("/")[2].split(".")[0]
+        return game, platform
+
+
+    def get_game_from_cores_recent(self):
+        logger.debug('Getting recent launched game from {}'.format(self.most_recent_file))
+        with open(self.most_recent_file) as f:
+            data = f.readline()
+        f.close
+        arr = re.split('\x00+', data)
+        print(arr)
+        platform = arr[0].split('/')[0]
+        if platform[0] == '_':
+            platform = platform[1:]
+        game = arr[1].split('.')[0]
+        print(platform)
+        print(game)
+        return game, platform
+
+
+    def get_friendly_platform_name(self, platform: str):
+        logger.debug('Converting {} to a friendly name.'.format(platform))
+        if platform.lower() == "arcade":
+            return "Arcade"
+        elif platform.lower() == "sms":
+            return "Sega Master System"
+        elif platform.lower() == "genesis":
+            return "Sega Genesis"
+        elif platform.lower() == "nes":
+            return "Nintendo Entertainment System"
+        elif platform.lower() == "snes":
+            return "Super Nintendo Entertainment System"
         else:
-            logger.debug("An unknown error has occurred.".format(entity))
-    except Exception:
-        logger.error(str(Exception))
-    return
+            return platform
 
 
-def update_entity(entity: str, state: str, attributes: dict):
-    http = urllib3.PoolManager()
-    data = {
-        'state': state,
-        'attributes': attributes
-        }
-    encoded_data = json.dumps(data).encode('utf-8')
-    r = http.request(
-        'POST', 
-        "{}states/{}".format(BASEURL, entity),
-        body=encoded_data,
-        headers= {
-            "authorization": 'Bearer ' + HA_LONG_LIVED_TOKEN,
-            "content-type": 'application/json'
-        }
-    )
-    return
+class Game:
+    def __init__(self, name, platform):
+        self.name = name
+        self.platform = platform
 
-
-try_add_to_startup()
 while True:
-    if test_api() == 200:
-        current_hass_state_game = get_entity(HA_GAME_ENTITY)
-        current_hass_state_platform = get_entity(HA_PLATFORM_ENTITY)
-        if current_hass_state_game and current_hass_state_platform: 
-            game, platform = find_most_recent()
-            logger.info("Latest: {} - {}".format(platform, game))
-            latest_game = game
-            latest_platform = platform
-            update_entity(HA_GAME_ENTITY, game, current_hass_state_game['attributes'])
-            update_entity(HA_PLATFORM_ENTITY, platform, current_hass_state_platform['attributes'])
+    ha = HomeAssistant()
+    if ha.api_up:
+        mister = Mister()
     print("Sleeping {} seconds...".format(POLL_TIME))
     time.sleep(int(POLL_TIME))
+
