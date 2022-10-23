@@ -10,7 +10,6 @@ import time
 import urllib3
 
 # Globals
-
 INI_PATH = "./hassio.ini"
 if os.path.exists(INI_PATH):
     ini = configparser.ConfigParser()
@@ -32,7 +31,7 @@ logging.basicConfig(
     level=numeric_level, 
     format='[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s',
     handlers=handlers
-)
+    )
 logger = logging.getLogger('hassio_logger')
 
 
@@ -43,6 +42,8 @@ class HomeAssistant:
         self.port = ini["HA_INFO"]["HA_PORT"]
         self.game_entity_name = ini["HA_INFO"]["HA_GAME_ENTITY"]
         self.platform_entity_name = ini["HA_INFO"]["HA_PLATFORM_ENTITY"]
+        self.current_hass_state_game = self.get_entity(self.game_entity_name)
+        self.current_hass_state_platform = self.get_entity(self.platform_entity_name)
         self.token = ini["HA_INFO"]["HA_LONG_LIVED_TOKEN"]
         self.baseurl = "{}://{}:{}/api/".format(self.protocol, self.hostname, self.port)
         self.api_up = False
@@ -101,6 +102,24 @@ class HomeAssistant:
         return
 
 
+    def update_entity(self, entity: str, state: str, attributes: dict):
+        http = urllib3.PoolManager()
+        data = {
+            'state': state,
+            'attributes': attributes
+            }
+        encoded_data = json.dumps(data).encode('utf-8')
+        r = http.request(
+            'POST', 
+            "{}states/{}".format(BASEURL, entity),
+            body=encoded_data,
+            headers= {
+                "authorization": 'Bearer ' + HA_LONG_LIVED_TOKEN,
+                "content-type": 'application/json'
+            }
+        )
+        return
+
 class Mister:
     def __init__(self):
         self.platform = ""
@@ -112,6 +131,9 @@ class Mister:
         self.list_of_recent_files = glob.glob(self.config_path + "/*_recent_*.cfg")
         self.most_recent_file = self.find_most_recent_file()
         self.most_recent_game = self.find_most_recent_game()
+        if ini["GENERAL"]["SET_AUTOSTART"].lower() == "true":
+            self.try_add_to_startup()
+        return
 
 
     def is_sam_active(self):
@@ -136,13 +158,14 @@ class Mister:
             logger.debug('Determined most recent launched from menu.')
             game, platform = self.get_game_from_cores_recent()
         else:
-            logger.debug('Determined most recent launched from core {}.'.format(latest_file))
+            logger.debug('Determined most recent launched from core {}.'.format(self.most_recent_file ))
             game, platform = self.get_game_from_specific_cores_recent()
         platform = self.get_friendly_platform_name(platform)
         logger.debug("Latest file: {}".format(self.most_recent_file))
         logger.debug("Latest game: {}".format(game))
         logger.debug("Latest platform: {}".format(platform))
         return Game(game, platform)
+
 
     def get_game_from_sam(self):
         logger.debug('Getting recent launched game from SAM')
@@ -197,15 +220,37 @@ class Mister:
             return platform
 
 
+    def try_add_to_startup(self):
+        logger.info('Adding script to startup.')
+        if not os.path.exists(self.startup_script_path ):
+            return
+        with open(self.startup_script_path , "r") as f:
+            if "Startup Hass Watcher" in f.read():
+                return
+        with open(self.startup_script_path , "a") as f:
+            f.write(
+                "\n# Startup Hass Watcher\n[[ -e /media/fat/Scripts/hassio.sh ]] && /media/fat/Scripts/hassio.sh refresh\n"
+            )
+        return
+
 class Game:
     def __init__(self, name, platform):
         self.name = name
         self.platform = platform
+        self.image = "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Generic_error_message.png/220px-Generic_error_message.png"
+        self.release_date = ""
+        self.description = ""
 
 while True:
     ha = HomeAssistant()
     if ha.api_up:
         mister = Mister()
+        print(ha.game_entity_name)
+        print(ha.platform_entity_name)
+        print(mister.most_recent_game.name)
+        print(mister.most_recent_game.platform)
+        #ha.update_entity(ha.game_entity_name, mister.most_recent_game.name), current_hass_state_game['attributes'])
+        #ha.update_entity(HA_PLATFORM_ENTITY, platform, current_hass_state_platform['attributes'])
     print("Sleeping {} seconds...".format(POLL_TIME))
     time.sleep(int(POLL_TIME))
 
