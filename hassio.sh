@@ -4,6 +4,7 @@ import glob
 import json
 import logging
 import os
+import re
 import sys
 import time
 import urllib3
@@ -59,7 +60,8 @@ def try_add_to_startup():
 
 
 def find_most_recent():
-    list_of_files = glob.glob('/media/fat/config/*_recent_*.cfg') # * means all if need specific format then *.csv
+    list_of_files = glob.glob('/media/fat/config/*_recent_*.cfg')
+    list_of_files.append(CORES_RECENT_PATH)
     if os.path.isfile(SAM_PATH):
         logger.debug('Determined SAM is active on system.')
         list_of_files.append(SAM_PATH)
@@ -67,9 +69,12 @@ def find_most_recent():
     if latest_file == SAM_PATH:
         logger.debug('Determined SAM is most recent launch.')
         game, platform = get_game_from_sam()
+    elif latest_file == CORES_RECENT_PATH:
+        logger.debug('Determined most recent launched from menu.')
+        game, platform = get_game_from_cores_recent()
     else:
-        logger.debug('Determined RECENTS is most recent launch.')
-        game, platform = get_game_from_cores_recents(latest_file)
+        logger.debug('Determined most recent launched from core {}.'.format(latest_file))
+        game, platform = get_game_from_specific_cores_recent(latest_file)
     platform = get_friendly_platform_name(platform)
     logger.debug("Latest file: {}".format(latest_file))
     logger.debug("Latest game: {}".format(game))
@@ -88,13 +93,29 @@ def get_game_from_sam():
     return game, platform
 
 
-def get_game_from_cores_recents(filepath: str):
+def get_game_from_specific_cores_recent(filepath: str):
     logger.debug('Getting recent launched game from cores_recents')
     with open(filepath) as f:
         game_path = f.readline().split('\x00')[0]
     f.close
     platform = game_path.split("/")[1]
     game = game_path.split("/")[2].split(".")[0]
+    return game, platform
+
+
+def get_game_from_cores_recent():
+    logger.debug('Getting recent launched game from {}'.format(CORES_RECENT_PATH))
+    with open(CORES_RECENT_PATH) as f:
+        data = f.readline()
+    f.close
+    arr = re.split('\x00+', data)
+    print(arr)
+    platform = arr[0].split('/')[0]
+    if platform[0] == '_':
+        platform = platform[1:]
+    game = arr[1].split('.')[0]
+    print(platform)
+    print(game)
     return game, platform
 
 
