@@ -1,0 +1,11 @@
+show_state: false
+show_name: false
+camera_view: auto
+type: picture-entity
+view_layout:
+  position: sidebar
+tap_action:
+  action: none
+hold_action:
+  action: none
+entity: camera.media_retroachievements_org
